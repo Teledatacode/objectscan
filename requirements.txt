@@ -1,4 +1,7 @@
-Flask
+flask
+gunicorn
 opencv-python
 numpy
-open3d
+pillow
+scikit-image
+
