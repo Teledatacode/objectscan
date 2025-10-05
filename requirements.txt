@@ -3,5 +3,5 @@ gunicorn
 opencv-python
 numpy
 pillow
+trimesh
 scikit-image
-
