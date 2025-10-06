@@ -2,7 +2,13 @@ from flask import Flask, request, jsonify
 import os
 from werkzeug.utils import secure_filename
 
+from flask_cors import CORS
+
 app = Flask(__name__)
+CORS(app)  # permite todos los orígenes, para pruebas
+
+
+
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
