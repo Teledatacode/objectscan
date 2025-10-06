@@ -1,12 +1,13 @@
-from flask import Flask, request, jsonify, send_file
-import cv2
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 import numpy as np
 import trimesh
 import os
 from PIL import Image
-from io import BytesIO
+import uuid
 
 app = Flask(__name__)
+CORS(app)  # Permite llamadas desde cualquier origen
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -26,7 +27,7 @@ def upload_photos():
     avg_color = np.mean([np.mean(p.reshape(-1, 3), axis=0) for p in photos], axis=0)
     color = [c / 255.0 for c in avg_color]
 
-    # Crear una forma simple (cilindro como sombrero)
+    # Crear un modelo simple: cilindro + tapa
     height = 1.0
     radius = 0.5
     mesh_cylinder = trimesh.creation.cylinder(radius=radius, height=height, sections=32)
@@ -36,14 +37,24 @@ def upload_photos():
     combined = trimesh.util.concatenate([mesh_cylinder, mesh_cap])
     combined.visual.vertex_colors = np.tile(np.array(color) * 255, (combined.vertices.shape[0], 1))
 
-    output_path = os.path.join(UPLOAD_FOLDER, "model.obj")
+    # Nombre único para evitar sobrescrituras
+    filename = f"model_{uuid.uuid4().hex}.obj"
+    output_path = os.path.join(UPLOAD_FOLDER, filename)
     combined.export(output_path)
 
-    return send_file(output_path, as_attachment=True)
+    # Devuelve JSON con la URL del modelo
+    return jsonify({"model_url": f"/uploads/{filename}", "photos": len(photos)})
+
+# Servir archivos OBJ desde /uploads
+@app.route("/uploads/<filename>")
+def serve_model(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
 
 @app.route("/")
 def index():
     return "Servidor de reconstrucción 3D simplificada activo."
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
