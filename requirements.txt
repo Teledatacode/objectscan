@@ -3,6 +3,7 @@ gunicorn
 opencv-python
 numpy
 pillow
+rembg
 trimesh
 scikit-image
 flask-cors
