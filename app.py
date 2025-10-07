@@ -22,21 +22,22 @@ def process_images():
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img_np = np.array(img)
 
-        # --- Centrar objeto usando contornos ---
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # --- Centrar objeto usando centro de masa ---
+gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+_, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
 
-        if contours:
-            # Bounding box del objeto
-            x, y, w, h = cv2.boundingRect(contours[0])
-            cx, cy = img_np.shape[1]//2, img_np.shape[0]//2  # centro imagen
-            obj_cx, obj_cy = x + w//2, y + h//2             # centro objeto
-            dx, dy = cx - obj_cx, cy - obj_cy              # desplazamiento
-            M = np.float32([[1, 0, dx], [0, 1, dy]])
-            img_centered = cv2.warpAffine(img_np, M, (img_np.shape[1], img_np.shape[0]))
-        else:
-            img_centered = img_np  # si no hay contornos, dejar igual
+# Encuentra todos los píxeles "blancos"
+coords = cv2.findNonZero(thresh)  # devuelve Nx1x2
+if coords is not None:
+    M = coords.mean(axis=0)[0]  # centro de masa (x,y)
+    cx, cy = img_np.shape[1]//2, img_np.shape[0]//2
+    dx, dy = cx - M[0], cy - M[1]
+    # mover toda la imagen
+    M_translate = np.float32([[1,0,dx],[0,1,dy]])
+    img_centered = cv2.warpAffine(img_np, M_translate, (img_np.shape[1], img_np.shape[0]))
+else:
+    img_centered = img_np  # si no hay píxeles blancos, dejar igual
+
 
         # Convertir a base64
         pil_img = Image.fromarray(img_centered)
