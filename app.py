@@ -4,59 +4,54 @@ from PIL import Image
 import io
 import base64
 import numpy as np
+import cv2
 
 app = Flask(__name__)
-CORS(app)  # Permite peticiones desde cualquier origen
+CORS(app)  # permite que tu frontend acceda al servidor
 
 @app.route("/process", methods=["POST"])
 def process_images():
-    try:
-        data = request.json
-        captures = data.get("captures", [])
-        print("Recibidas capturas:", len(captures))
+    data = request.json
+    captures = data.get("captures", [])
 
-        processed = []
+    processed = []
 
-        for idx, cap in enumerate(captures):
-            img_str = cap.get("image")
-            if not img_str:
-                print(f"Captura {idx} vacía")
-                continue
+    for idx, cap in enumerate(captures):
+        img_b64 = cap.get("image").split(",")[1]  # extraer base64
+        img_bytes = base64.b64decode(img_b64)
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img_np = np.array(img)
 
-            # Asegurarse de que es un base64 completo
-            if "," in img_str:
-                img_b64 = img_str.split(",")[1]
-            else:
-                img_b64 = img_str
+        # --- Centrar objeto usando contornos ---
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            img_bytes = base64.b64decode(img_b64)
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            img_np = np.array(img)
+        if contours:
+            # Bounding box del objeto
+            x, y, w, h = cv2.boundingRect(contours[0])
+            cx, cy = img_np.shape[1]//2, img_np.shape[0]//2  # centro imagen
+            obj_cx, obj_cy = x + w//2, y + h//2             # centro objeto
+            dx, dy = cx - obj_cx, cy - obj_cy              # desplazamiento
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            img_centered = cv2.warpAffine(img_np, M, (img_np.shape[1], img_np.shape[0]))
+        else:
+            img_centered = img_np  # si no hay contornos, dejar igual
 
-            # --- Centrar el objeto: placeholder recorte central ---
-            h, w, _ = img_np.shape
-            crop_size = min(h, w)
-            start_h = (h - crop_size) // 2
-            start_w = (w - crop_size) // 2
-            img_crop = img_np[start_h:start_h+crop_size, start_w:start_w+crop_size]
+        # Convertir a base64
+        pil_img = Image.fromarray(img_centered)
+        buffer = io.BytesIO()
+        pil_img.save(buffer, format="JPEG")
+        processed_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
 
-            # Convertir de vuelta a base64
-            pil_crop = Image.fromarray(img_crop)
-            buffer = io.BytesIO()
-            pil_crop.save(buffer, format="JPEG")
-            processed_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+        processed.append({
+            "image": processed_b64,
+            "vector": cap.get("vector")
+        })
 
-            processed.append({
-                "image": processed_b64,
-                "vector": cap.get("vector")
-            })
-
-        return jsonify({"captures": processed})
-
-    except Exception as e:
-        print("Error procesando imágenes:", e)
-        return jsonify({"captures": [], "error": str(e)}), 500
+    print(f"Procesadas {len(processed)} capturas.")
+    return jsonify({"captures": processed})
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True)
