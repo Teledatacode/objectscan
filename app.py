@@ -1,65 +1,67 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from rembg import remove
 from PIL import Image
-import io
-import base64
+import io, base64, os
 import numpy as np
-import cv2
 
 app = Flask(__name__)
 CORS(app)
 
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 @app.route("/process", methods=["POST"])
-def process_images():
-    data = request.json
+def process_photos():
+    """
+    Recibe capturas del cliente:
+    [
+      { "image": "data:image/jpeg;base64,...", "vector": {...} }
+    ]
+    Devuelve las mismas fotos centradas y con una versión con fondo transparente (PNG).
+    """
+
+    data = request.get_json()
     captures = data.get("captures", [])
 
     processed = []
+    for i, cap in enumerate(captures):
+        img_data = cap.get("image")
+        if not img_data:
+            continue
 
-    for cap in captures:
-        img_b64 = cap.get("image").split(",")[1]
-        img_bytes = base64.b64decode(img_b64)
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img_np = np.array(img)
+        # --- Decodificar base64 ---
+        base64_str = img_data.split(",")[1] if "," in img_data else img_data
+        img_bytes = base64.b64decode(base64_str)
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
 
-        # --- Centrar objeto (como antes) ---
-        h, w, _ = img_np.shape
-        crop_size = min(h, w)
-        start_h = (h - crop_size) // 2
-        start_w = (w - crop_size) // 2
-        img_crop = img_np[start_h:start_h+crop_size, start_w:start_w+crop_size]
+        # --- Remover fondo ---
+        try:
+            img_no_bg = remove(img)
+        except Exception as e:
+            print(f"Error removiendo fondo en imagen {i}: {e}")
+            img_no_bg = img  # fallback sin procesar
 
-        # --- Crear versión con fondo transparente ---
-        # Convertir a HSV para segmentar fondo blanco
-        hsv = cv2.cvtColor(img_crop, cv2.COLOR_RGB2HSV)
-        lower = np.array([0,0,200])  # blanco aproximado
-        upper = np.array([180,40,255])
-        mask = cv2.inRange(hsv, lower, upper)
-        mask_inv = cv2.bitwise_not(mask)
+        # --- Convertir ambas imágenes a base64 ---
+        # Fondo original (convertido a JPG)
+        buf_bg = io.BytesIO()
+        img.convert("RGB").save(buf_bg, format="JPEG", quality=90)
+        img_bg_b64 = "data:image/jpeg;base64," + base64.b64encode(buf_bg.getvalue()).decode("utf-8")
 
-        b, g, r = cv2.split(img_crop)
-        alpha = mask_inv
-        img_rgba = cv2.merge([r, g, b, alpha])  # RGBA
-
-        # Convertir a base64
-        pil_img = Image.fromarray(img_rgba)
-        buffer = io.BytesIO()
-        pil_img.save(buffer, format="PNG")
-        img_transparent_b64 = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
-
-        # También guardamos versión con fondo
-        pil_img_bg = Image.fromarray(img_crop)
-        buffer_bg = io.BytesIO()
-        pil_img_bg.save(buffer_bg, format="JPEG")
-        img_bg_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer_bg.getvalue()).decode()
+        # Fondo transparente (en PNG)
+        buf_trans = io.BytesIO()
+        img_no_bg.save(buf_trans, format="PNG")
+        img_trans_b64 = "data:image/png;base64," + base64.b64encode(buf_trans.getvalue()).decode("utf-8")
 
         processed.append({
-            "image_bg": img_bg_b64,           # con fondo
-            "image_transparent": img_transparent_b64, # transparente
-            "vector": cap.get("vector")
+            "image_bg": img_bg_b64,
+            "image_transparent": img_trans_b64,
+            "vector": cap.get("vector", {})
         })
 
+    print(f"Procesadas {len(processed)} imágenes correctamente.")
     return jsonify({"captures": processed})
+    
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
