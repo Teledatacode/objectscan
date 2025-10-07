@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 
 app = Flask(__name__)
-CORS(app)  # permite llamadas desde cualquier origen
+CORS(app)
 
 @app.route("/process", methods=["POST"])
 def process_images():
@@ -16,45 +16,50 @@ def process_images():
 
     processed = []
 
-    for idx, cap in enumerate(captures):
-        img_b64 = cap.get("image")
-        if not img_b64:
-            print(f"Captura {idx} vacía")
-            continue
-
-        # --- Convertir base64 a numpy array ---
-        img_bytes = base64.b64decode(img_b64.split(",")[-1])
+    for cap in captures:
+        img_b64 = cap.get("image").split(",")[1]
+        img_bytes = base64.b64decode(img_b64)
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img_np = np.array(img)
 
-        # --- Centrar el objeto usando centro de masa ---
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
-        coords = cv2.findNonZero(thresh)
+        # --- Centrar objeto (como antes) ---
+        h, w, _ = img_np.shape
+        crop_size = min(h, w)
+        start_h = (h - crop_size) // 2
+        start_w = (w - crop_size) // 2
+        img_crop = img_np[start_h:start_h+crop_size, start_w:start_w+crop_size]
 
-        if coords is not None:
-            M = coords.mean(axis=0)[0]  # centro de masa (x, y)
-            cx, cy = img_np.shape[1]//2, img_np.shape[0]//2
-            dx, dy = cx - M[0], cy - M[1]
-            M_translate = np.float32([[1, 0, dx], [0, 1, dy]])
-            img_centered = cv2.warpAffine(img_np, M_translate, (img_np.shape[1], img_np.shape[0]))
-        else:
-            img_centered = img_np
+        # --- Crear versión con fondo transparente ---
+        # Convertir a HSV para segmentar fondo blanco
+        hsv = cv2.cvtColor(img_crop, cv2.COLOR_RGB2HSV)
+        lower = np.array([0,0,200])  # blanco aproximado
+        upper = np.array([180,40,255])
+        mask = cv2.inRange(hsv, lower, upper)
+        mask_inv = cv2.bitwise_not(mask)
 
-        # --- Convertir de vuelta a base64 ---
-        pil_img = Image.fromarray(img_centered)
+        b, g, r = cv2.split(img_crop)
+        alpha = mask_inv
+        img_rgba = cv2.merge([r, g, b, alpha])  # RGBA
+
+        # Convertir a base64
+        pil_img = Image.fromarray(img_rgba)
         buffer = io.BytesIO()
-        pil_img.save(buffer, format="JPEG")
-        processed_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+        pil_img.save(buffer, format="PNG")
+        img_transparent_b64 = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+        # También guardamos versión con fondo
+        pil_img_bg = Image.fromarray(img_crop)
+        buffer_bg = io.BytesIO()
+        pil_img_bg.save(buffer_bg, format="JPEG")
+        img_bg_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer_bg.getvalue()).decode()
 
         processed.append({
-            "image": processed_b64,
+            "image_bg": img_bg_b64,           # con fondo
+            "image_transparent": img_transparent_b64, # transparente
             "vector": cap.get("vector")
         })
 
-    print(f"Recibidas capturas: {len(captures)}, procesadas: {len(processed)}")
     return jsonify({"captures": processed})
-
 
 if __name__ == "__main__":
     app.run(debug=True)
