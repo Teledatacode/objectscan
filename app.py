@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # <-- importa CORS
 from PIL import Image
 import io
 import base64
@@ -6,6 +7,7 @@ import numpy as np
 import cv2
 
 app = Flask(__name__)
+CORS(app)
 
 @app.route("/process", methods=["POST"])
 def process_images():
