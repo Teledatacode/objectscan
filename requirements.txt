@@ -2,6 +2,7 @@ flask
 gunicorn
 opencv-python
 numpy
+onxruntime
 pillow
 rembg
 trimesh
