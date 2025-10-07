@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 
 app = Flask(__name__)
-CORS(app)  # permite que tu frontend acceda al servidor
+CORS(app)  # permite llamadas desde cualquier origen
 
 @app.route("/process", methods=["POST"])
 def process_images():
@@ -17,29 +17,31 @@ def process_images():
     processed = []
 
     for idx, cap in enumerate(captures):
-        img_b64 = cap.get("image").split(",")[1]  # extraer base64
-        img_bytes = base64.b64decode(img_b64)
+        img_b64 = cap.get("image")
+        if not img_b64:
+            print(f"Captura {idx} vacía")
+            continue
+
+        # --- Convertir base64 a numpy array ---
+        img_bytes = base64.b64decode(img_b64.split(",")[-1])
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img_np = np.array(img)
 
-    # --- Centrar objeto usando centro de masa ---
-gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-_, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        # --- Centrar el objeto usando centro de masa ---
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        coords = cv2.findNonZero(thresh)
 
-# Encuentra todos los píxeles "blancos"
-coords = cv2.findNonZero(thresh)  # devuelve Nx1x2
-if coords is not None:
-    M = coords.mean(axis=0)[0]  # centro de masa (x,y)
-    cx, cy = img_np.shape[1]//2, img_np.shape[0]//2
-    dx, dy = cx - M[0], cy - M[1]
-    # mover toda la imagen
-    M_translate = np.float32([[1,0,dx],[0,1,dy]])
-    img_centered = cv2.warpAffine(img_np, M_translate, (img_np.shape[1], img_np.shape[0]))
-else:
-    img_centered = img_np  # si no hay píxeles blancos, dejar igual
+        if coords is not None:
+            M = coords.mean(axis=0)[0]  # centro de masa (x, y)
+            cx, cy = img_np.shape[1]//2, img_np.shape[0]//2
+            dx, dy = cx - M[0], cy - M[1]
+            M_translate = np.float32([[1, 0, dx], [0, 1, dy]])
+            img_centered = cv2.warpAffine(img_np, M_translate, (img_np.shape[1], img_np.shape[0]))
+        else:
+            img_centered = img_np
 
-
-        # Convertir a base64
+        # --- Convertir de vuelta a base64 ---
         pil_img = Image.fromarray(img_centered)
         buffer = io.BytesIO()
         pil_img.save(buffer, format="JPEG")
@@ -50,7 +52,7 @@ else:
             "vector": cap.get("vector")
         })
 
-    print(f"Procesadas {len(processed)} capturas.")
+    print(f"Recibidas capturas: {len(captures)}, procesadas: {len(processed)}")
     return jsonify({"captures": processed})
 
 
