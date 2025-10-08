@@ -1,65 +1,96 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import os, io, base64, requests
 from PIL import Image
-import io
-import base64
-import numpy as np
-import cv2
+
+# === Config ===
+REPLICATE_MODEL = "cjwbw/rembg"  # modelo remoto
+REPLICATE_API_URL = f"https://api.replicate.com/v1/predictions"
+REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")  # ⚠️ la pondrás en Render dashboard
 
 app = Flask(__name__)
 CORS(app)
 
+@app.route("/")
+def home():
+    return "✅ Servidor Flask activo y usando RemBG en la nube (Replicate)."
+
+def remove_background_via_replicate(img_base64):
+    """Envía la imagen base64 a Replicate y devuelve una versión sin fondo (PNG base64)."""
+    try:
+        headers = {
+            "Authorization": f"Token {REPLICATE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "a58ed858c6f0e4c1e28e3f6e27315cf816648db6fcbad69f32f3a534e5d9a30e",  # rembg u2netp
+            "input": {"image": img_base64}
+        }
+
+        resp = requests.post(REPLICATE_API_URL, headers=headers, json=payload)
+        if resp.status_code != 201:
+            print("Error Replicate:", resp.text)
+            return None
+
+        prediction = resp.json()
+        status_url = prediction["urls"]["get"]
+
+        # Esperar el resultado (polling)
+        for _ in range(30):
+            r = requests.get(status_url, headers=headers)
+            data = r.json()
+            if data["status"] == "succeeded":
+                output_url = data["output"][0]
+                # Descargar imagen procesada
+                img_bytes = requests.get(output_url).content
+                img_b64 = "data:image/png;base64," + base64.b64encode(img_bytes).decode("utf-8")
+                return img_b64
+            elif data["status"] in ["failed", "canceled"]:
+                print("Replicate falló:", data)
+                return None
+        return None
+    except Exception as e:
+        print("⚠️ Error usando Replicate:", e)
+        return None
+
+
 @app.route("/process", methods=["POST"])
-def process_images():
-    data = request.json
+def process_photos():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No se recibió JSON válido"}), 400
+
     captures = data.get("captures", [])
+    if not captures:
+        return jsonify({"error": "No se recibieron capturas"}), 400
 
     processed = []
 
-    for cap in captures:
-        img_b64 = cap.get("image").split(",")[1]
-        img_bytes = base64.b64decode(img_b64)
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img_np = np.array(img)
+    for i, cap in enumerate(captures):
+        try:
+            img_data = cap.get("image")
+            if not img_data:
+                continue
 
-        # --- Centrar objeto (como antes) ---
-        h, w, _ = img_np.shape
-        crop_size = min(h, w)
-        start_h = (h - crop_size) // 2
-        start_w = (w - crop_size) // 2
-        img_crop = img_np[start_h:start_h+crop_size, start_w:start_w+crop_size]
+            # Fondo transparente desde Replicate
+            img_trans_b64 = remove_background_via_replicate(img_data)
+            if not img_trans_b64:
+                img_trans_b64 = img_data  # fallback si falla
 
-        # --- Crear versión con fondo transparente ---
-        # Convertir a HSV para segmentar fondo blanco
-        hsv = cv2.cvtColor(img_crop, cv2.COLOR_RGB2HSV)
-        lower = np.array([0,0,200])  # blanco aproximado
-        upper = np.array([180,40,255])
-        mask = cv2.inRange(hsv, lower, upper)
-        mask_inv = cv2.bitwise_not(mask)
+            processed.append({
+                "image_bg": img_data,  # original
+                "image_transparent": img_trans_b64,
+                "vector": cap.get("vector", {})
+            })
 
-        b, g, r = cv2.split(img_crop)
-        alpha = mask_inv
-        img_rgba = cv2.merge([r, g, b, alpha])  # RGBA
+        except Exception as e:
+            print(f"❌ Error procesando imagen {i}: {e}")
 
-        # Convertir a base64
-        pil_img = Image.fromarray(img_rgba)
-        buffer = io.BytesIO()
-        pil_img.save(buffer, format="PNG")
-        img_transparent_b64 = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
-
-        # También guardamos versión con fondo
-        pil_img_bg = Image.fromarray(img_crop)
-        buffer_bg = io.BytesIO()
-        pil_img_bg.save(buffer_bg, format="JPEG")
-        img_bg_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer_bg.getvalue()).decode()
-
-        processed.append({
-            "image_bg": img_bg_b64,           # con fondo
-            "image_transparent": img_transparent_b64, # transparente
-            "vector": cap.get("vector")
-        })
-
+    print(f"✅ Procesadas {len(processed)} imágenes (via Replicate).")
     return jsonify({"captures": processed})
 
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
