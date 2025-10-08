@@ -27,7 +27,6 @@ def process_photos():
     ]
     Devuelve las mismas fotos centradas y con una versión con fondo transparente (PNG).
     """
-
     data = request.get_json()
     if not data:
         return jsonify({"error": "No se recibió JSON válido"}), 400
@@ -37,25 +36,24 @@ def process_photos():
         return jsonify({"error": "No se recibieron capturas"}), 400
 
     processed = []
-    for i, cap in enumerate(captures):
-        try:
-            img_data = cap.get("image")
-            if not img_data:
-                continue
 
+    for i, cap in enumerate(captures):
+        img_data = cap.get("image")
+        if not img_data:
+            continue
+
+        try:
             # --- Decodificar base64 ---
             base64_str = img_data.split(",")[1] if "," in img_data else img_data
             img_bytes = base64.b64decode(base64_str)
             img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
 
-            # --- Remover fondo ---
-          # --- Remover fondo ---
-try:
-    img_no_bg = remove(img, session=rembg_session)
-except Exception as e:
-    print(f"⚠️ Error removiendo fondo en imagen {i}: {e}")
-    img_no_bg = img  # fallback sin procesar
-
+            # --- Remover fondo con rembg ---
+            try:
+                img_no_bg = remove(img, session=rembg_session)
+            except Exception as e:
+                print(f"⚠️ Error removiendo fondo en imagen {i}: {e}")
+                img_no_bg = img  # fallback sin procesar
 
             # --- Convertir ambas imágenes a base64 ---
             # Fondo original (JPG)
@@ -76,12 +74,12 @@ except Exception as e:
 
         except Exception as e:
             print(f"❌ Error procesando imagen {i}: {e}")
+            continue
 
     print(f"✅ Procesadas {len(processed)} imágenes correctamente.")
     return jsonify({"captures": processed})
 
 
 if __name__ == "__main__":
-    # Render asigna el puerto automáticamente
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
