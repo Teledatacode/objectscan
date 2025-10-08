@@ -4,15 +4,20 @@ from rembg import remove, new_session
 from PIL import Image
 import io, base64, os
 
-print("Inicializando modelo rembg...")
-rembg_session = new_session("u2net")
-print("Modelo rembg listo.")
-
 app = Flask(__name__)
 CORS(app)
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+print("✅ Servidor Flask listo para recibir peticiones.")
+
+# --- Lazy loading del modelo ---
+rembg_session = None
+def get_rembg_session():
+    global rembg_session
+    if rembg_session is None:
+        print("🔄 Inicializando modelo rembg (u2netp, versión ligera)...")
+        rembg_session = new_session("u2netp")  # Modelo pequeño (~12MB)
+        print("✅ Modelo rembg listo.")
+    return rembg_session
 
 @app.route("/")
 def index():
@@ -50,7 +55,8 @@ def process_photos():
 
             # --- Remover fondo con rembg ---
             try:
-                img_no_bg = remove(img, session=rembg_session)
+                session = get_rembg_session()
+                img_no_bg = remove(img, session=session)
             except Exception as e:
                 print(f"⚠️ Error removiendo fondo en imagen {i}: {e}")
                 img_no_bg = img  # fallback sin procesar
