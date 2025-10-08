@@ -1,8 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from rembg import remove
+from rembg import remove, new_session
 from PIL import Image
 import io, base64, os
+
+print("Inicializando modelo rembg...")
+rembg_session = new_session("u2net")
+print("Modelo rembg listo.")
 
 app = Flask(__name__)
 CORS(app)
@@ -45,11 +49,13 @@ def process_photos():
             img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
 
             # --- Remover fondo ---
-            try:
-                img_no_bg = remove(img)
-            except Exception as e:
-                print(f"⚠️ Error removiendo fondo en imagen {i}: {e}")
-                img_no_bg = img  # fallback sin procesar
+          # --- Remover fondo ---
+try:
+    img_no_bg = remove(img, session=rembg_session)
+except Exception as e:
+    print(f"⚠️ Error removiendo fondo en imagen {i}: {e}")
+    img_no_bg = img  # fallback sin procesar
+
 
             # --- Convertir ambas imágenes a base64 ---
             # Fondo original (JPG)
