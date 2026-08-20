@@ -2,8 +2,6 @@ Flask
 flask-cors
 gunicorn
 numpy
+opencv-python-headless
 open3d
 trimesh
-Pillow
-transformers
-torch
