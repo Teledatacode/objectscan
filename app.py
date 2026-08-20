@@ -18,6 +18,77 @@ CORS(app)
 
 
 # =========================================================
+# CONFIG
+# =========================================================
+
+PORT = int(os.environ.get("PORT", 10000))
+
+DEPTH_ENABLED = os.environ.get(
+    "DEPTH_ENABLED",
+    "false"
+).lower() == "true"
+
+DEPTH_MODEL = os.environ.get(
+    "DEPTH_MODEL",
+    "LiheYoung/depth-anything-small-hf"
+)
+
+
+# =========================================================
+# DEPTH MODEL
+# =========================================================
+
+depth_pipeline = None
+
+
+def load_depth_model():
+
+    global depth_pipeline
+
+    if not DEPTH_ENABLED:
+        print("Depth Anything disabled.")
+        return None
+
+    if depth_pipeline is not None:
+        return depth_pipeline
+
+    print("")
+    print("==========================================")
+    print("LOADING DEPTH ANYTHING")
+    print("==========================================")
+
+    try:
+
+        from transformers import pipeline
+
+        depth_pipeline = pipeline(
+            "depth-estimation",
+            model=DEPTH_MODEL
+        )
+
+        print(
+            "Depth model loaded:",
+            DEPTH_MODEL
+        )
+
+        return depth_pipeline
+
+    except Exception as error:
+
+        print(
+            "Could not load Depth Anything."
+        )
+
+        print(error)
+
+        traceback.print_exc()
+
+        depth_pipeline = None
+
+        return None
+
+
+# =========================================================
 # HEALTH CHECK
 # =========================================================
 
@@ -27,15 +98,200 @@ def home():
     return jsonify({
         "ok": True,
         "service": "ObjectScan 3D",
-        "status": "running"
+        "status": "running",
+        "depth_enabled": DEPTH_ENABLED,
+        "depth_model": DEPTH_MODEL
     })
 
 
+@app.route("/health", methods=["GET"])
+def health():
+
+    colmap_ok = False
+    colmap_error = None
+
+    try:
+
+        result = subprocess.run(
+            ["colmap", "-h"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10
+        )
+
+        colmap_ok = (
+            result.returncode == 0
+        )
+
+    except Exception as error:
+
+        colmap_error = str(error)
+
+
+    return jsonify({
+
+        "ok":
+            colmap_ok,
+
+        "colmap":
+            colmap_ok,
+
+        "colmap_error":
+            colmap_error,
+
+        "depth_enabled":
+            DEPTH_ENABLED,
+
+        "depth_model":
+            DEPTH_MODEL
+
+    }), 200 if colmap_ok else 500
+
+
 # =========================================================
-# 3D PROCESSING
+# DEPTH ESTIMATION
 # =========================================================
 
-@app.route("/process-3d", methods=["POST"])
+def run_depth_estimation(
+    image_path,
+    output_path
+):
+
+    model = load_depth_model()
+
+    if model is None:
+
+        return False
+
+
+    print("")
+    print(
+        "Running depth estimation:",
+        image_path
+    )
+
+
+    try:
+
+        from PIL import Image
+
+        image = Image.open(
+            image_path
+        ).convert("RGB")
+
+
+        result = model(
+            image
+        )
+
+
+        depth = result["predicted_depth"]
+
+
+        if hasattr(
+            depth,
+            "detach"
+        ):
+
+            depth = (
+                depth
+                .detach()
+                .cpu()
+                .numpy()
+            )
+
+
+        depth = np.asarray(
+            depth
+        )
+
+
+        depth = np.squeeze(
+            depth
+        )
+
+
+        if depth.ndim != 2:
+
+            raise Exception(
+                "Invalid depth output."
+            )
+
+
+        # -----------------------------------------------------
+        # NORMALIZE
+        # -----------------------------------------------------
+
+        minimum = float(
+            depth.min()
+        )
+
+        maximum = float(
+            depth.max()
+        )
+
+
+        if maximum <= minimum:
+
+            raise Exception(
+                "Depth map has no useful range."
+            )
+
+
+        normalized = (
+            (depth - minimum)
+            /
+            (maximum - minimum)
+        )
+
+
+        depth_image = (
+            normalized * 255.0
+        ).astype(
+            np.uint8
+        )
+
+
+        from PIL import Image
+
+        Image.fromarray(
+            depth_image
+        ).save(
+            output_path
+        )
+
+
+        print(
+            "Depth saved:",
+            output_path
+        )
+
+
+        return True
+
+
+    except Exception as error:
+
+        print(
+            "Depth estimation failed:"
+        )
+
+        print(error)
+
+        traceback.print_exc()
+
+        return False
+
+
+# =========================================================
+# PROCESS 3D
+# =========================================================
+
+@app.route(
+    "/process-3d",
+    methods=["POST"]
+)
 def process_3d():
 
     print("")
@@ -43,19 +299,36 @@ def process_3d():
     print("        OBJECTSCAN 3D REQUEST")
     print("==========================================")
 
+
     temp_dir = tempfile.mkdtemp(
         prefix="objectscan_"
     )
 
+
     try:
 
         # =====================================================
-        # 1. RECIBIR IMÁGENES
+        # CHECK COLMAP
         # =====================================================
 
-        image1 = request.files.get("image1")
-        image2 = request.files.get("image2")
-        image3 = request.files.get("image3")
+        check_colmap()
+
+
+        # =====================================================
+        # RECEIVE IMAGES
+        # =====================================================
+
+        image1 = request.files.get(
+            "image1"
+        )
+
+        image2 = request.files.get(
+            "image2"
+        )
+
+        image3 = request.files.get(
+            "image3"
+        )
 
 
         if not image1:
@@ -63,10 +336,12 @@ def process_3d():
                 "Missing image1"
             )
 
+
         if not image2:
             raise Exception(
                 "Missing image2"
             )
+
 
         if not image3:
             raise Exception(
@@ -74,10 +349,15 @@ def process_3d():
             )
 
 
+        # =====================================================
+        # IMAGE DIRECTORY
+        # =====================================================
+
         images_dir = os.path.join(
             temp_dir,
             "images"
         )
+
 
         os.makedirs(
             images_dir,
@@ -124,12 +404,14 @@ def process_3d():
 
 
         # =====================================================
-        # 2. COMPROBAR ARCHIVOS
+        # VERIFY IMAGES
         # =====================================================
 
         for path in image_paths:
 
-            if not os.path.exists(path):
+            if not os.path.exists(
+                path
+            ):
 
                 raise Exception(
                     f"Image was not saved: {path}"
@@ -144,7 +426,64 @@ def process_3d():
 
 
         # =====================================================
-        # 3. PREPARAR COLMAP
+        # DEPTH MAPS
+        # =====================================================
+
+        depth_dir = os.path.join(
+            temp_dir,
+            "depth"
+        )
+
+
+        os.makedirs(
+            depth_dir,
+            exist_ok=True
+        )
+
+
+        depth_paths = []
+
+
+        if DEPTH_ENABLED:
+
+            print("")
+            print(
+                "Generating depth maps..."
+            )
+
+
+            for index, image_path in enumerate(
+                image_paths,
+                start=1
+            ):
+
+                depth_path = os.path.join(
+                    depth_dir,
+                    f"depth{index}.png"
+                )
+
+
+                success = run_depth_estimation(
+                    image_path,
+                    depth_path
+                )
+
+
+                if success:
+
+                    depth_paths.append(
+                        depth_path
+                    )
+
+
+        print(
+            "Depth maps generated:",
+            len(depth_paths)
+        )
+
+
+        # =====================================================
+        # COLMAP DIRECTORIES
         # =====================================================
 
         database_path = os.path.join(
@@ -178,12 +517,13 @@ def process_3d():
 
 
         # =====================================================
-        # 4. FEATURE EXTRACTION
+        # FEATURE EXTRACTION
         # =====================================================
 
         run_command([
 
             "colmap",
+
             "feature_extractor",
 
             "--database_path",
@@ -205,12 +545,13 @@ def process_3d():
 
 
         # =====================================================
-        # 5. FEATURE MATCHING
+        # FEATURE MATCHING
         # =====================================================
 
         run_command([
 
             "colmap",
+
             "exhaustive_matcher",
 
             "--database_path",
@@ -223,12 +564,13 @@ def process_3d():
 
 
         # =====================================================
-        # 6. STRUCTURE FROM MOTION
+        # MAPPER
         # =====================================================
 
         run_command([
 
             "colmap",
+
             "mapper",
 
             "--database_path",
@@ -244,7 +586,7 @@ def process_3d():
 
 
         # =====================================================
-        # 7. ENCONTRAR MODELO
+        # FIND MODEL
         # =====================================================
 
         model_dir = find_sparse_model(
@@ -255,8 +597,11 @@ def process_3d():
         if model_dir is None:
 
             raise Exception(
-                "COLMAP could not reconstruct the cameras. "
-                "The 3 photos may not contain enough overlapping features."
+
+                "COLMAP could not reconstruct "
+                "the cameras. Try taking the "
+                "three photos with more overlap."
+
             )
 
 
@@ -267,12 +612,13 @@ def process_3d():
 
 
         # =====================================================
-        # 8. IMAGE UNDISTORT
+        # UNDISTORT
         # =====================================================
 
         run_command([
 
             "colmap",
+
             "image_undistorter",
 
             "--image_path",
@@ -291,12 +637,13 @@ def process_3d():
 
 
         # =====================================================
-        # 9. PATCH MATCH STEREO
+        # PATCH MATCH
         # =====================================================
 
         run_command([
 
             "colmap",
+
             "patch_match_stereo",
 
             "--workspace_path",
@@ -315,7 +662,7 @@ def process_3d():
 
 
         # =====================================================
-        # 10. FUSIONAR POINT CLOUD
+        # FUSION
         # =====================================================
 
         fused_path = os.path.join(
@@ -327,6 +674,7 @@ def process_3d():
         run_command([
 
             "colmap",
+
             "stereo_fusion",
 
             "--workspace_path",
@@ -356,7 +704,19 @@ def process_3d():
 
 
         # =====================================================
-        # 11. POINT CLOUD → MESH
+        # OPTIONAL DEPTH INFORMATION
+        # =====================================================
+
+        if depth_paths:
+
+            print(
+                "Depth maps available for "
+                "additional processing."
+            )
+
+
+        # =====================================================
+        # POINT CLOUD → MESH
         # =====================================================
 
         mesh_path = os.path.join(
@@ -372,7 +732,7 @@ def process_3d():
 
 
         # =====================================================
-        # 12. MESH → GLB
+        # MESH → GLB
         # =====================================================
 
         glb_path = os.path.join(
@@ -396,6 +756,7 @@ def process_3d():
             )
 
 
+        print("")
         print(
             "=========================================="
         )
@@ -407,7 +768,9 @@ def process_3d():
 
         print(
             "SIZE:",
-            os.path.getsize(glb_path),
+            os.path.getsize(
+                glb_path
+            ),
             "bytes"
         )
 
@@ -417,18 +780,20 @@ def process_3d():
 
 
         # =====================================================
-        # 13. DEVOLVER GLB
+        # RETURN GLB
         # =====================================================
 
         return send_file(
 
             glb_path,
 
-            mimetype="model/gltf-binary",
+            mimetype=
+                "model/gltf-binary",
 
             as_attachment=False,
 
-            download_name="objectscan.glb"
+            download_name=
+                "objectscan.glb"
 
         )
 
@@ -436,16 +801,26 @@ def process_3d():
     except Exception as error:
 
         print("")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print("3D PROCESSING ERROR")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        )
+
+        print(
+            "3D PROCESSING ERROR"
+        )
+
+        print(
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        )
+
 
         traceback.print_exc()
 
 
         return jsonify({
 
-            "ok": False,
+            "ok":
+                False,
 
             "error":
                 str(error)
@@ -455,14 +830,70 @@ def process_3d():
 
     finally:
 
-        # =====================================================
-        # LIMPIAR TEMPORALES
-        # =====================================================
-
         shutil.rmtree(
             temp_dir,
             ignore_errors=True
         )
+
+
+# =========================================================
+# CHECK COLMAP
+# =========================================================
+
+def check_colmap():
+
+    try:
+
+        result = subprocess.run(
+
+            [
+                "colmap",
+                "-h"
+            ],
+
+            stdout=subprocess.PIPE,
+
+            stderr=subprocess.STDOUT,
+
+            text=True,
+
+            timeout=10
+
+        )
+
+
+    except FileNotFoundError as error:
+
+        raise RuntimeError(
+
+            "COLMAP is not installed. "
+
+            "The Render server needs COLMAP "
+            "installed at system level."
+
+        ) from error
+
+
+    except Exception as error:
+
+        raise RuntimeError(
+
+            "Could not execute COLMAP: "
+            + str(error)
+
+        ) from error
+
+
+    if result.returncode != 0:
+
+        raise RuntimeError(
+            "COLMAP exists but could not run."
+        )
+
+
+    print(
+        "COLMAP available."
+    )
 
 
 # =========================================================
@@ -473,22 +904,46 @@ def run_command(command):
 
     print("")
     print(
-        "RUNNING:",
+        "=========================================="
+    )
+
+    print(
+        "RUNNING:"
+    )
+
+    print(
         " ".join(command)
     )
 
-
-    result = subprocess.run(
-
-        command,
-
-        stdout=subprocess.PIPE,
-
-        stderr=subprocess.STDOUT,
-
-        text=True
-
+    print(
+        "=========================================="
     )
+
+
+    try:
+
+        result = subprocess.run(
+
+            command,
+
+            stdout=subprocess.PIPE,
+
+            stderr=subprocess.STDOUT,
+
+            text=True,
+
+            timeout=900
+
+        )
+
+
+    except FileNotFoundError as error:
+
+        raise RuntimeError(
+
+            f"Executable not found: {command[0]}"
+
+        ) from error
 
 
     print(
@@ -509,6 +964,9 @@ def run_command(command):
             + result.stdout
 
         )
+
+
+    return result.stdout
 
 
 # =========================================================
@@ -551,10 +1009,12 @@ def find_sparse_model(
             "cameras.bin"
         )
 
+
         images = os.path.join(
             path,
             "images.bin"
         )
+
 
         points = os.path.join(
             path,
@@ -621,9 +1081,44 @@ def create_mesh(
     )
 
 
-    # -------------------------------------------------------
+    # =====================================================
+    # DOWNSAMPLE
+    # =====================================================
+
+    print(
+        "Downsampling point cloud..."
+    )
+
+
+    voxel_size = 0.003
+
+
+    pcd = pcd.voxel_down_sample(
+        voxel_size
+    )
+
+
+    print(
+        "Points after downsample:",
+        len(pcd.points)
+    )
+
+
+    if len(pcd.points) < 100:
+
+        raise Exception(
+            "Not enough points to create mesh."
+        )
+
+
+    # =====================================================
     # NORMALS
-    # -------------------------------------------------------
+    # =====================================================
+
+    print(
+        "Estimating normals..."
+    )
+
 
     pcd.estimate_normals(
 
@@ -639,14 +1134,22 @@ def create_mesh(
     )
 
 
-    pcd.orient_normals_consistent_tangent_plane(
-        20
-    )
+    try:
+
+        pcd.orient_normals_consistent_tangent_plane(
+            20
+        )
+
+    except Exception:
+
+        print(
+            "Could not consistently orient normals."
+        )
 
 
-    # -------------------------------------------------------
-    # POISSON RECONSTRUCTION
-    # -------------------------------------------------------
+    # =====================================================
+    # POISSON
+    # =====================================================
 
     print(
         "Creating mesh..."
@@ -673,37 +1176,39 @@ def create_mesh(
     )
 
 
-    # -------------------------------------------------------
-    # REMOVE LOW DENSITY AREAS
-    # -------------------------------------------------------
+    # =====================================================
+    # REMOVE LOW DENSITY
+    # =====================================================
 
     densities = np.asarray(
         densities
     )
 
 
-    threshold = np.quantile(
-        densities,
-        0.03
-    )
+    if len(densities) > 0:
+
+        threshold = np.quantile(
+            densities,
+            0.03
+        )
 
 
-    vertices_to_remove = (
+        vertices_to_remove = (
 
-        densities <
-        threshold
+            densities <
+            threshold
 
-    )
-
-
-    mesh.remove_vertices_by_mask(
-        vertices_to_remove
-    )
+        )
 
 
-    # -------------------------------------------------------
+        mesh.remove_vertices_by_mask(
+            vertices_to_remove
+        )
+
+
+    # =====================================================
     # CLEAN
-    # -------------------------------------------------------
+    # =====================================================
 
     mesh.remove_degenerate_triangles()
 
@@ -714,9 +1219,9 @@ def create_mesh(
     mesh.remove_non_manifold_edges()
 
 
-    # -------------------------------------------------------
+    # =====================================================
     # SAVE
-    # -------------------------------------------------------
+    # =====================================================
 
     success = o3d.io.write_triangle_mesh(
 
@@ -777,7 +1282,9 @@ def convert_to_glb(
 
     scene.export(
         glb_path,
+
         file_type="glb"
+
     )
 
 
@@ -793,18 +1300,10 @@ def convert_to_glb(
 
 if __name__ == "__main__":
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
-
     app.run(
 
         host="0.0.0.0",
 
-        port=port
+        port=PORT
 
     )
