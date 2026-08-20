@@ -2,7 +2,8 @@ Flask
 flask-cors
 gunicorn
 numpy
-opencv-python-headless
-Pillow
-trimesh
 open3d
+trimesh
+Pillow
+transformers
+torch
